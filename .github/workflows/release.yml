@@ -1,0 +1,134 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RCLONE_VERSION: v1.74.4
+
+jobs:
+  build:
+    name: Compilar (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            os: macos-latest
+            rclone: osx-arm64
+          - name: macos-x86_64
+            os: macos-15-intel
+            rclone: osx-amd64
+          - name: windows-x86_64
+            os: windows-latest
+            rclone: windows-amd64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Versión
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "VERSION=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=dev-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Instalar Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ matrix.name }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ matrix.name }}-cargo-
+
+      - name: Pruebas
+        run: cargo test --release
+
+      - name: Descargar rclone (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          base="https://downloads.rclone.org/${RCLONE_VERSION}"
+          file="rclone-${RCLONE_VERSION}-${{ matrix.rclone }}.zip"
+          curl -fsSLO "$base/$file"
+          curl -fsSLO "$base/SHA256SUMS"
+          grep " $file\$" SHA256SUMS | shasum -a 256 -c -
+          unzip -q "$file"
+          cp "rclone-${RCLONE_VERSION}-${{ matrix.rclone }}/rclone" rclone
+          chmod +x rclone
+
+      - name: Empaquetar (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          RCLONE_BIN="$PWD/rclone" scripts/bundle-macos.sh
+          ditto -c -k --keepParent "dist/Copiar de OneDrive.app" "dist/OneDrive-Downloader-${VERSION}-${{ matrix.name }}.zip"
+
+      - name: Descargar rclone (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $base = "https://downloads.rclone.org/$env:RCLONE_VERSION"
+          $file = "rclone-$env:RCLONE_VERSION-windows-amd64.zip"
+          Invoke-WebRequest "$base/$file" -OutFile $file
+          Invoke-WebRequest "$base/SHA256SUMS" -OutFile SHA256SUMS
+          $expected = ((Select-String -Path SHA256SUMS -Pattern " $file$").Line -split '\s+')[0]
+          if ((Get-FileHash $file -Algorithm SHA256).Hash -ne $expected.ToUpper()) { throw "El SHA256 de rclone no coincide" }
+          Expand-Archive $file -DestinationPath rclone-dl
+          Copy-Item "rclone-dl/rclone-$env:RCLONE_VERSION-windows-amd64/rclone.exe" rclone.exe
+
+      - name: Compilar y empaquetar (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo build --release
+          New-Item -ItemType Directory -Force dist/pkg | Out-Null
+          Copy-Item target/release/onedrive-copier.exe, rclone.exe, README.md dist/pkg/
+          Compress-Archive -Path dist/pkg/* -DestinationPath "dist/OneDrive-Downloader-$env:VERSION-${{ matrix.name }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  release:
+    name: Publicar release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Crear la release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la dist
+          gh release create "$GITHUB_REF_NAME" dist/*.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file .github/release-notes.md
