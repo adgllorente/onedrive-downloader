@@ -644,7 +644,8 @@ mod tests {
     #[test]
     fn copy_never_overwrites_by_default_and_sets_parallel_transfers() {
         let args = text(&copy_args(&folder("Imagenes/Toledo", "Toledo", &[]), Path::new("/tmp/d"), None, true, 8));
-        assert_eq!(&args[..3], ["copy", "onedrive:Imagenes/Toledo", "/tmp/d/Toledo"]);
+        assert_eq!(&args[..2], ["copy", "onedrive:Imagenes/Toledo"]);
+        assert_eq!(Path::new(&args[2]), Path::new("/tmp/d/Toledo"));
         assert!(args.contains(&"--ignore-existing".to_string()));
         let at = args.iter().position(|a| a == "--transfers").unwrap();
         assert_eq!(args[at + 1], "8");
@@ -660,7 +661,8 @@ mod tests {
         assert!(excl.windows(2).any(|w| w == ["--exclude-from", "/tmp/lista.txt"]));
         let files = PlanItem::Files { src_dir: "A/B".into(), dest: "A/B".into(), files: vec!["x.jpg".into()] };
         let args = text(&copy_args(&files, Path::new("/d"), Some(list), true, 4));
-        assert_eq!(&args[..3], ["copy", "onedrive:A/B", "/d/A/B"]);
+        assert_eq!(&args[..2], ["copy", "onedrive:A/B"]);
+        assert_eq!(Path::new(&args[2]), Path::new("/d/A/B"));
         assert!(args.windows(2).any(|w| w == ["--files-from-raw", "/tmp/lista.txt"]));
     }
 
